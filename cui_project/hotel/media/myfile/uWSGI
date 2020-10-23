@@ -1,0 +1,291 @@
+- 项目部署是指在软件开发完毕后，将开发机器上运行的开发板软件实际安装到服务器上进行长期运行
+
+- 部署要分以下几个步骤进行
+
+  1. 在安装机器上安装和配置同版本的环境
+
+  1. django 项目迁移
+
+     $ sudo scp 当前项目源代码 远程主机地址和文件夹
+
+     ```shell
+     sudo scp /home/tarena/django/mysite1 root@88.77.66.55:/home/root/xxx
+     请输入root密码：
+     ```
+
+  1. 用 uwsgi 替代`python3 manage.py runserver` 方法启动服务器
+
+  1. 配置 nginx 反向代理服务器
+
+  1. 用nginx 配置静态文件路径,解决静态路径问题
+
+
+
+### uWSGI 网关接口配置 (ubuntu 18.04 配置)
+
+- WSGI (Web Server Gateway Interface)Web服务器网关接口，是Python应用程序或框架和Web服务器之间的一种接口，被广泛使用
+
+- 使用 `python manage.py runserver` 通常只在开发和测试环境中使用。
+
+- 当开发结束后，完善的项目代码需要在一个高效稳定的环境中运行，这时可以使用WSGI
+
+- uWSGI是WSGI的一种, 它实现了 http协议 WSGI协议 以及 uwsgi协议
+
+- 安装uWSGI
+
+  - 终端输入如下命令
+
+    ```shell
+    sudo pip3 install uwsgi==2.0.18 -i https://pypi.tuna.tsinghua.edu.cn/simple/
+    ```
+
+  - 检查是否安装成功
+
+    ```shell
+    sudo pip3 freeze|grep -i 'uwsgi'
+    #如果成功安装，则会输出
+    uWSGI==2.0.18
+    ```
+
+
+
+- 配置uWSGI
+
+  - 添加配置文件 `项目同名文件夹/uwsgi.ini`
+    - 如: mysite1/mysite1/uwsgi.ini
+    [uwsgi]
+# 套接字方式的 IP地址:端口号
+# socket=127.0.0.1:8000
+# Http通信方式的 IP地址:端口号
+http=127.0.0.1:8000
+# 项目当前工作目录
+chdir=/home/tarena/.../my_project 这里需要换为项目文件夹的绝对路径
+# 项目中wsgi.py文件的目录，相对于当前工作目录
+wsgi-file=my_project/wsgi.py
+# 进程个数
+process=4
+# 每个进程的线程个数
+threads=2
+# 服务的pid记录文件
+pidfile=uwsgi.pid
+# 服务的目志文件位置
+daemonize=uwsgi.log
+# 开启主进程管理模式
+master=true
+- - 修改settings.py将 DEBUG=True 改为DEBUG=False
+
+  - 修改settings.py 将ALLOWED_HOSTS = [] 改为ALLOWED_HOSTS = ['网站域名'] 或者 ['服务监听的ip地址']
+
+- uWSGI的运行管理
+
+  - 启动 uwsgi
+
+    ```shell
+    $ 进入到项目同名文件夹下 【即settings.py所在目录】
+    $ sudo uwsgi --ini uwsgi.ini
+    ```
+
+  - 停止 uwsgi
+
+    ```shell
+    $ 进入到项目同名文件夹下 【即settings.py所在目录】
+    $ sudo uwsgi --stop uwsgi.pid
+    ```
+
+  - 说明:
+
+    - 当uwsgi 启动后,当前django项目的程序已变成后台守护进程,在关闭当前终端时此进程也不会停止。
+
+    - 若执行 stop 操作失败，则需要执行如下操作杀死进程
+
+      ```shell
+      ps aux|grep 'uwsgi'  -> 查看uwsgi进程
+
+      tarena   103408  0.0  0.9 137172 39984 ?        S    10:02   0:01 uwsgi --ini uwsgi.ini
+      tarena   103410  0.0  0.9 436200 38552 ?        Sl   10:02   0:00 uwsgi --ini uwsgi.ini
+
+      ps -ef | grep 'uwsgi' | grep -v grep | awk '{print $2}' | xargs sudo kill -9
+      ```
+
+
+
+- 测试:
+
+  - 在浏览器端输入<http://127.0.0.1:8000> 进行测试
+  - 注意，此时端口号为8000
+
+### nginx 及反向代理配置
+
+- Nginx是轻量级的高性能Web服务器，提供了诸如HTTP代理和反向代理、负载均衡、缓存等一系列重要特性，在实践之中使用广泛。
+
+- C语言编写，执行效率高
+
+- nginx 作用
+
+  - 负载均衡， 多台服务器轮流处理请求
+  - 反向代理
+
+- 原理:
+
+- 客户端请求nginx,再由nginx 将请求转发 uWSGI 运行的django
+
+- ubuntu 下 nginx 安装
+  $ sudo apt install nginx
+
+  ```shell
+  vim /etc/apt/sources.list
+  更改国内源
+  sudo apt-get update
+  ```
+
+- nginx 配置
+
+  - 修改nginx 的配置文件 /etc/nginx/sites-enabled/default
+
+  ```
+  # 在server节点下添加新的location项，指向uwsgi的ip与端口。
+  #注意tryfiles要注释掉 location是上面的那个
+  server {
+      ...
+      location / {
+          uwsgi_pass 127.0.0.1:8000;  # 重定向到127.0.0.1的8000端口
+          include /etc/nginx/uwsgi_params; # 将所有的参数转到uwsgi下
+      }
+      ...
+  }
+  ```
+
+- nginx服务控制
+
+  ```shell
+  $ sudo /etc/init.d/nginx start|stop|restart|status
+  # 或
+  $ sudo service nginx start|stop|restart|status
+  ```
+
+  > 通过 start,stop,restart,status 可能实现nginx服务的启动、停止、重启、操作
+
+- 修改uWSGI配置
+
+  - **修改`项目同名文件夹/uwsgi.ini`下的Http通信方式改为socket通信方式**
+
+  ```ini
+  [uwsgi]
+  # 去掉如下
+  # http=127.0.0.1:8000
+  # 改为
+  socket=127.0.0.1:8000
+  ```
+
+  - **重启uWSGI服务**
+
+  ```shell
+  进入到 项目同名文件夹下
+  $ sudo uwsgi --stop uwsgi.pid
+  $ sudo uwsgi --ini uwsgi.ini
+  ```
+
+  - 测试:
+
+    - 在浏览器端输入<http://127.0.0.1> 进行测试
+
+    - 注意 ：
+
+      1，此时端口号为80(nginx默认值)
+
+      2，Django中有任何修改 需要重启 uwsgi , 否则修改不生效
+      ### nginx 配置静态文件路径
+
+- 创建新路径-主要存放Django所有静态文件 如： /home/tarena/项目名_static/
+
+- 在Django settings.py 中添加新配置
+
+  ```python
+  STATIC_ROOT = '/home/tarena/项目名_static/static
+  #注意 此配置路径为 存放所有正式环境中需要的静态文件
+  ```
+
+- 进入项目，执行  **python3 manage.py collectstatic** 。执行该命令后，Django将项目重所有静态文件 复制到 STATIC_ROOT 中 ，包括Django内建的静态文件【如admin后台的样式】
+
+- Nginx配置中添加新配置
+
+  ```nginx
+  # file : /etc/nginx/sites-enabled/default
+  # 新添加location /static 路由配置，重定向到指定的 第一步创建的路径即可
+  server {
+      ...
+      location /static {
+          # root 第一步创建文件夹的绝对路径,如:
+           root /home/tarena/项目名_static;
+      }
+      ...
+  }
+  ```
+
+### 404/500 界面
+
+- 在模板文件夹内添加 404.html 模版，当视图触发Http404 异常时将会被显示
+- 404.html 仅在发布版中(即setting.py 中的 DEBUG=False时) 才起作用
+- 当向应处理函数触发Http404异常时就会跳转到404界面
+
+```python
+from django.http import Http404
+def xxx_view( ):
+    raise Http404  # 直接返回404
+```
+
+### 邮件告警
+
+- 当正式服务器上代码运行有报错时，可将错误追溯信息发至指定的邮箱
+
+- 配置如下 settings.py中
+
+  ```python
+  #在基础邮件配置之后 添加如下
+
+  #关闭调试模式
+  DEBUG = False
+
+  #错误报告接收方
+  ADMINS = [('guoxiaonao', 'xxxx@example.com'), ('wanglaoshi', 'xxxx@example.com')]
+
+  #发送错误报告方，默认为 root@localhost账户，多数邮件服务器会拒绝
+  SERVER_EMAIL = 'email配置中的邮箱'
+
+
+  ```
+
+- 过滤敏感信息
+
+报错邮件中会显示一些错误的追踪，这些错误追踪中会出现如 password等敏感信息，Django已经将配置文件中的敏感信息 过滤修改为   多个星号，但是用户自定义的视图函数需要用户手动过滤敏感信息
+
+1，视图函数中的局部变量
+
+```python
+from django.views.decorators.debug import sensitive_variables
+
+@sensitive_variables('user', 'pw', 'cc')
+def process_info(user):
+    pw = user.pass_word
+    cc = user.credit_card_number
+    name = user.name
+    ...
+#注意：
+#1 若报错邮件中牵扯到user,pw,cc等局部变量的值，则会将其替换成  *****, 而 name 变量还显示其真实值
+#2 多个装饰器时，需要将其放在最顶部
+#3 若不传参数，则过滤所有局部变量的值
+
+```
+
+2，POST提交中的数据
+
+```python
+from django.views.decorators.debug import sensitive_post_parameters
+
+@sensitive_post_parameters('password', 'username')
+def index(request):
+    s = request.POST['username'] + request.POST['abcd']
+	#'abcd' 并不存在，此时引发error
+#POST中 username 及 password的值会被替换成  ******
+```
+
